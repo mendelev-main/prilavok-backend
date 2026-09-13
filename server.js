@@ -109,7 +109,7 @@ app.post("/api/menu/sync", async (req, res) => {
         name: String(c.name || "").trim(),
         color: c.color ? String(c.color) : null,
         sort_order: Number.isFinite(Number(c.sortOrder)) ? Number(c.sortOrder) : index,
-        is_active: true
+        is_active: c.isActive !== false
       }))
       .filter(c => c.name && c.external_id);
 
@@ -117,6 +117,24 @@ app.post("/api/menu/sync", async (req, res) => {
       const { error } = await supabase
         .from("categories")
         .upsert(categoryRows, { onConflict: "external_id" });
+      if (error) throw error;
+    }
+
+    // Treat sync as a snapshot: categories missing from the POS are no longer active.
+    // This makes deleting a category in the POS remove it from the WEB menu.
+    const { data: existingCategories, error: existingCategoriesError } = await supabase
+      .from("categories")
+      .select("id,external_id");
+    if (existingCategoriesError) throw existingCategoriesError;
+    const categoryExternalIdSet = new Set(externalIds);
+    const staleCategoryIds = (existingCategories || [])
+      .filter(c => c.external_id && !categoryExternalIdSet.has(c.external_id))
+      .map(c => c.id);
+    if (staleCategoryIds.length) {
+      const { error } = await supabase
+        .from("categories")
+        .update({ is_active: false })
+        .in("id", staleCategoryIds);
       if (error) throw error;
     }
 
@@ -154,6 +172,24 @@ app.post("/api/menu/sync", async (req, res) => {
       const { error } = await supabase
         .from("products")
         .upsert(productRows, { onConflict: "external_id" });
+      if (error) throw error;
+    }
+
+    // Treat sync as a snapshot: products missing from the POS are deactivated.
+    // This removes deleted POS products from the WEB menu without deleting history.
+    const { data: existingProducts, error: existingProductsError } = await supabase
+      .from("products")
+      .select("id,external_id");
+    if (existingProductsError) throw existingProductsError;
+    const productExternalIdSet = new Set(productRows.map(p => p.external_id));
+    const staleProductIds = (existingProducts || [])
+      .filter(p => p.external_id && !productExternalIdSet.has(p.external_id))
+      .map(p => p.id);
+    if (staleProductIds.length) {
+      const { error } = await supabase
+        .from("products")
+        .update({ is_active: false, available_online: false })
+        .in("id", staleProductIds);
       if (error) throw error;
     }
 

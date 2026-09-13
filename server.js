@@ -49,9 +49,16 @@ app.post("/api/media/upload", async (req, res) => {
       headers: { Authorization: `Bearer ${supabaseKey}`, apikey: supabaseKey, "Content-Type": "application/json" },
       body: JSON.stringify({ id: bucket, name: bucket, public: true })
     });
-    if (!createBucket.ok && createBucket.status !== 409) {
+    if (!createBucket.ok) {
       const txt = await createBucket.text();
-      throw new Error(`Storage bucket: ${createBucket.status} ${txt}`);
+      let duplicate = createBucket.status === 409;
+      try {
+        const body = JSON.parse(txt);
+        duplicate = duplicate || body?.code === "BucketAlreadyExists" || Number(body?.statusCode) === 409;
+      } catch (_) {}
+      if (!duplicate) {
+        throw new Error(`Storage bucket: ${createBucket.status} ${txt}`);
+      }
     }
 
     const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";

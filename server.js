@@ -4,7 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 const port = process.env.PORT || 3000;
@@ -23,6 +23,55 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "prilavok-backend" });
 });
 
+
+
+app.post("/api/media/upload", async (req, res) => {
+  try {
+    const deviceKey = String(req.header("x-device-key") || req.body?.deviceKey || "").trim();
+    const productId = String(req.body?.productId || "").trim();
+    const dataUrl = String(req.body?.dataUrl || "").trim();
+    if (!deviceKey || !productId || !dataUrl) return res.status(400).json({ error: "Missing upload data" });
+
+    const { data: device, error: deviceError } = await supabase
+      .from("devices").select("id").eq("device_key", deviceKey).eq("is_active", true).maybeSingle();
+    if (deviceError) throw deviceError;
+    if (!device) return res.status(401).json({ error: "Invalid device key" });
+
+    const match = dataUrl.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/i);
+    if (!match) return res.status(400).json({ error: "Only JPEG, PNG or WebP images are supported" });
+    const mime = match[1].toLowerCase();
+    const buffer = Buffer.from(match[2], "base64");
+    if (!buffer.length || buffer.length > 1500000) return res.status(400).json({ error: "Image is too large" });
+
+    const bucket = "product-images";
+    const createBucket = await fetch(`${supabaseUrl}/storage/v1/bucket`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${supabaseKey}`, apikey: supabaseKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ id: bucket, name: bucket, public: true })
+    });
+    if (!createBucket.ok && createBucket.status !== 409) {
+      const txt = await createBucket.text();
+      throw new Error(`Storage bucket: ${createBucket.status} ${txt}`);
+    }
+
+    const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+    const path = `products/${encodeURIComponent(productId)}.${ext}`;
+    const upload = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${supabaseKey}`, apikey: supabaseKey, "Content-Type": mime, "x-upsert": "true" },
+      body: buffer
+    });
+    if (!upload.ok) {
+      const txt = await upload.text();
+      throw new Error(`Storage upload: ${upload.status} ${txt}`);
+    }
+    const url = `${supabaseUrl}/storage/v1/object/public/${bucket}/${path}`;
+    return res.json({ ok: true, url });
+  } catch (error) {
+    console.error("POST /api/media/upload:", error);
+    return res.status(500).json({ error: "Failed to upload image" });
+  }
+});
 
 app.post("/api/menu/sync", async (req, res) => {
   try {
@@ -88,7 +137,8 @@ app.post("/api/menu/sync", async (req, res) => {
           category_id: categoryMap.get(categoryExternalId) || null,
           sort_order: Number.isFinite(Number(p.sortOrder)) ? Number(p.sortOrder) : index,
           is_active: p.isActive !== false,
-          available_online: p.availableOnline !== false
+          available_online: p.availableOnline !== false,
+          image_url: p.imageUrl ? String(p.imageUrl) : null
         };
       })
       .filter(p => p.external_id && p.name);
@@ -136,8 +186,10 @@ app.get("/api/menu", async (_req, res) => {
 
     if (productsError) throw productsError;
 
+    const onlineCategoryIds = new Set((products ?? []).map(p => p.category_id).filter(Boolean));
+    const visibleCategories = (categories ?? []).filter(c => onlineCategoryIds.has(c.id));
     res.json({
-      categories: categories ?? [],
+      categories: visibleCategories,
       products: products ?? []
     });
   } catch (error) {

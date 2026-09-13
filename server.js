@@ -5,10 +5,12 @@ import { createClient } from "@supabase/supabase-js";
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
+app.use(express.static("public"));
 
 const port = process.env.PORT || 3000;
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const deliveryFee = Number(process.env.DELIVERY_FEE || 0);
 
 if (!supabaseUrl || !supabaseKey) {
   console.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
@@ -186,6 +188,87 @@ app.get("/api/orders/events", async (req, res) => {
   const heartbeat=setInterval(()=>{ try{res.write(`: ping\n\n`);}catch(e){} }, 15000);
   req.on("close",()=>{clearInterval(heartbeat);eventClients.delete(client);});
   pushNewOrders();
+});
+
+
+app.get("/api/config", (_req, res) => {
+  res.json({ deliveryFee: Number.isFinite(deliveryFee) ? deliveryFee : 0 });
+});
+
+app.post("/api/orders", async (req, res) => {
+  try {
+    const orderType = String(req.body?.orderType || "Самовывоз").trim();
+    const customerName = String(req.body?.customerName || "").trim();
+    const phone = String(req.body?.phone || "").trim();
+    const address = String(req.body?.address || "").trim();
+    const comment = String(req.body?.comment || "").trim();
+    const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
+
+    if (!customerName || !phone || !requestedItems.length) {
+      return res.status(400).json({ error: "Заполните данные заказа и добавьте товары" });
+    }
+    if (orderType === "Доставка" && !address) {
+      return res.status(400).json({ error: "Укажите адрес доставки" });
+    }
+
+    const ids = requestedItems.map(x => String(x.productId || "").trim()).filter(Boolean);
+    const uniqueIds = [...new Set(ids)];
+    if (!uniqueIds.length || uniqueIds.length !== ids.length) {
+      return res.status(400).json({ error: "Некорректные товары в заказе" });
+    }
+
+    const { data: products, error: productsError } = await supabase
+      .from("products")
+      .select("id,external_id,name,price")
+      .in("id", uniqueIds)
+      .eq("is_active", true)
+      .eq("available_online", true);
+    if (productsError) throw productsError;
+    const productMap = new Map((products || []).map(p => [p.id, p]));
+    if (productMap.size !== uniqueIds.length) {
+      return res.status(400).json({ error: "Один из товаров больше недоступен для заказа" });
+    }
+
+    const items = [];
+    let subtotal = 0;
+    for (const raw of requestedItems) {
+      const product = productMap.get(String(raw.productId));
+      const quantity = Number(raw.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 99) {
+        return res.status(400).json({ error: "Некорректное количество товара" });
+      }
+      const lineTotal = Number(product.price || 0) * quantity;
+      subtotal += lineTotal;
+      items.push({
+        product_id: product.id,
+        external_product_id: product.external_id,
+        product_name: product.name,
+        price: Number(product.price || 0),
+        quantity,
+        comment: raw.comment ? String(raw.comment).trim().slice(0, 500) : null
+      });
+    }
+
+    const fee = orderType === "Доставка" ? (Number.isFinite(deliveryFee) ? deliveryFee : 0) : 0;
+    const total = subtotal + fee;
+    const externalId = `WEB-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+
+    const { data: order, error: orderError } = await supabase
+      .from("orders")
+      .insert({ external_id: externalId, status: "new", order_type: orderType, customer_name: customerName, phone, address: orderType === "Доставка" ? address : null, comment: comment || null, total, delivery_fee: fee })
+      .select("*")
+      .single();
+    if (orderError) throw orderError;
+
+    const rows = items.map(item => ({ ...item, order_id: order.id }));
+    const { error: itemError } = await supabase.from("order_items").insert(rows);
+    if (itemError) throw itemError;
+
+    res.status(201).json({ ok: true, orderId: order.id, externalId, total, deliveryFee: fee });
+  } catch (error) {
+    console.error("POST /api/orders:", error);
+    res.status(500).json({ error: "Не удалось создать заказ" });
+  }
 });
 
 app.post("/api/orders/test", async (req,res)=>{

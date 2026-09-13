@@ -126,6 +126,7 @@ app.post("/api/menu/sync", async (req, res) => {
       .from("categories")
       .select("id,external_id");
     if (existingCategoriesError) throw existingCategoriesError;
+    const externalIds = categoryRows.map(c => c.external_id);
     const categoryExternalIdSet = new Set(externalIds);
     const staleCategoryIds = (existingCategories || [])
       .filter(c => c.external_id && !categoryExternalIdSet.has(c.external_id))
@@ -138,7 +139,6 @@ app.post("/api/menu/sync", async (req, res) => {
       if (error) throw error;
     }
 
-    const externalIds = categoryRows.map(c => c.external_id);
     let categoryMap = new Map();
 
     if (externalIds.length) {

@@ -3,6 +3,9 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 
+import "./public/order-validation.js";
+const { validate: validateOrderContact, normalizePhone } = globalThis.OrderValidation;
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -213,12 +216,16 @@ app.post("/api/orders", async (req, res) => {
   try {
     const orderType = String(req.body?.orderType || "Самовывоз").trim();
     const customerName = String(req.body?.customerName || "").trim();
-    const phone = String(req.body?.phone || "").trim();
+    const rawPhone = String(req.body?.phone || "").trim();
+    const phone = normalizePhone(rawPhone);
     const address = String(req.body?.address || "").trim();
     const comment = String(req.body?.comment || "").trim();
     const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!customerName || !phone || !requestedItems.length) return res.status(400).json({ error: "Заполните данные заказа и добавьте товары" });
     if (orderType === "Доставка" && !address) return res.status(400).json({ error: "Укажите адрес доставки" });
+
+    const contactError = validateOrderContact({ phone: rawPhone, comment, items: requestedItems });
+    if (contactError) return res.status(400).json({ error: contactError });
 
     const ids = requestedItems.map(x => String(x.productId || "").trim()).filter(Boolean);
     const uniqueIds = [...new Set(ids)];

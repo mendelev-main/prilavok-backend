@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
 export const PHONE_VERIFICATION_TTL_MS = 5 * 60 * 1000;
+const TELEGRAM_BOT_USERNAME = "project_account_bot";
 
 export function createPhoneVerificationService(supabase, normalizePhone) {
   const hashToken = token => createHash("sha256").update(String(token)).digest("hex");
@@ -23,7 +24,12 @@ export function createPhoneVerificationService(supabase, normalizePhone) {
     });
     if (error) throw error;
 
-    return { token, status: "PENDING", expiresAt };
+    return {
+      token,
+      status: "PENDING",
+      expiresAt,
+      telegramUrl: `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${encodeURIComponent(token)}`,
+    };
   }
 
   async function get(token) {

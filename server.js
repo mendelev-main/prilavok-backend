@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
+import { createPhoneVerificationService } from "./phone-verification.js";
 
 import "./public/order-validation.js";
 const { validate: validateOrderContact, normalizePhone } = globalThis.OrderValidation;
@@ -22,9 +23,52 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+const phoneVerification = createPhoneVerificationService(supabase, normalizePhone);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "prilavok-backend" });
+});
+
+app.post("/api/phone-verification", async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || "").trim();
+    const returnUrl = req.body?.returnUrl ? String(req.body.returnUrl).trim() : null;
+    const result = await phoneVerification.create(phone, returnUrl);
+    if (result.error) return res.status(result.status || 400).json({ error: result.error });
+    return res.status(201).json(result);
+  } catch (error) {
+    console.error("POST /api/phone-verification:", error);
+    return res.status(500).json({ error: "Не удалось начать подтверждение номера" });
+  }
+});
+
+app.get("/api/phone-verification/:token", async (req, res) => {
+  try {
+    const verification = await phoneVerification.get(req.params.token);
+    if (!verification) return res.status(404).json({ error: "Подтверждение не найдено" });
+    return res.json({
+      status: verification.status,
+      phone: verification.phone,
+      expiresAt: verification.expires_at,
+      verifiedAt: verification.verified_at,
+    });
+  } catch (error) {
+    console.error("GET /api/phone-verification/:token:", error);
+    return res.status(500).json({ error: "Не удалось проверить статус" });
+  }
+});
+
+app.post("/api/phone-verification/:token/confirm", async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || "").trim();
+    const telegramUserId = req.body?.telegramUserId;
+    const result = await phoneVerification.confirm(req.params.token, phone, telegramUserId);
+    if (!result.ok) return res.status(409).json(result);
+    return res.json(result);
+  } catch (error) {
+    console.error("POST /api/phone-verification/:token/confirm:", error);
+    return res.status(500).json({ ok: false, error: "Не удалось подтвердить номер" });
+  }
 });
 
 app.post("/api/media/upload", async (req, res) => {
@@ -266,53 +310,38 @@ app.post("/api/orders", async (req, res) => {
   }
 });
 
-app.get("/api/orders/track/:token", async (req, res) => {
+app.get("/api/orders/:token", async (req, res) => {
   try {
     const token = String(req.params.token || "").trim();
-    if (!token || token.length < 20) return res.status(400).json({ error: "Некорректный код заказа" });
-    const { data: order, error } = await supabase.from("orders").select("id,external_id,status,order_type,customer_name,total,delivery_fee,created_at,updated_at,order_items(id,product_name,price,quantity,comment)").eq("tracking_token", token).maybeSingle();
+    if (!token) return res.status(400).json({ error: "Missing token" });
+    const { data: order, error } = await supabase.from("orders").select("id,external_id,status,order_type,customer_name,phone,address,comment,total,delivery_fee,created_at,updated_at,order_items(product_name,price,quantity,comment)").eq("tracking_token", token).maybeSingle();
     if (error) throw error;
     if (!order) return res.status(404).json({ error: "Заказ не найден" });
-    res.json({ ok: true, order });
+    res.json({ order });
   } catch (error) {
-    console.error("GET /api/orders/track/:token:", error);
-    res.status(500).json({ error: "Не удалось получить заказ" });
+    console.error("GET /api/orders/:token:", error);
+    res.status(500).json({ error: "Не удалось загрузить заказ" });
   }
 });
 
-app.post("/api/orders/test", async (req,res)=>{
-  try{
-    const deviceKey=String(req.header("x-device-key")||req.body?.deviceKey||"").trim();
-    if(!deviceKey) return res.status(401).json({error:"Missing device key"});
-    const {data:device,error:deviceError}=await supabase.from("devices").select("id").eq("device_key",deviceKey).eq("is_active",true).maybeSingle();
-    if(deviceError) throw deviceError;
-    if(!device) return res.status(403).json({error:"Unknown device"});
-    const {data:product,error:productError}=await supabase.from("products").select("id,external_id,name,price").eq("is_active",true).eq("available_online",true).order("sort_order").limit(1).maybeSingle();
-    if(productError) throw productError;
-    if(!product) return res.status(400).json({error:"No online products. Sync the menu first."});
-    const qty=1;
-    const total=Number(product.price||0)+5;
-    const trackingToken=randomUUID().replace(/-/g,"");
-    const {data:order,error:orderError}=await supabase.from("orders").insert({external_id:`TEST-${Date.now()}`,tracking_token:trackingToken,status:"new",order_type:"Доставка",customer_name:"Тестовый клиент",phone:"+375 29 000-00-00",address:"Тестовый адрес, 1",comment:"Тестовый веб-заказ",total,delivery_fee:5}).select("*").single();
-    if(orderError) throw orderError;
-    const {error:itemError}=await supabase.from("order_items").insert({order_id:order.id,product_id:product.id,external_product_id:product.external_id,product_name:product.name,price:Number(product.price||0),quantity:qty,comment:null});
-    if(itemError) throw itemError;
-    res.json({ok:true,orderId:order.id,externalId:order.external_id,trackingToken});
-  } catch(error){ console.error("POST /api/orders/test:",error); res.status(500).json({error:"Failed to create test order"}); }
+app.patch("/api/orders/:id/status", async (req, res) => {
+  try {
+    const deviceKey = String(req.header("x-device-key") || "").trim();
+    const id = String(req.params.id || "").trim();
+    const status = String(req.body?.status || "").trim();
+    const allowed = new Set(["new", "accepted", "preparing", "ready", "cancelled"]);
+    if (!deviceKey) return res.status(401).json({ error: "Missing device key" });
+    if (!id || !allowed.has(status)) return res.status(400).json({ error: "Invalid status" });
+    const { data: device, error: deviceError } = await supabase.from("devices").select("id").eq("device_key", deviceKey).eq("is_active", true).maybeSingle();
+    if (deviceError) throw deviceError;
+    if (!device) return res.status(401).json({ error: "Invalid device key" });
+    const { data: order, error } = await supabase.from("orders").update({ status, updated_at: new Date().toISOString() }).eq("id", id).select("id,status,updated_at").single();
+    if (error) throw error;
+    res.json({ ok: true, order });
+  } catch (error) {
+    console.error("PATCH /api/orders/:id/status:", error);
+    res.status(500).json({ error: "Не удалось обновить статус заказа" });
+  }
 });
 
-app.post("/api/orders/:id/accept", async (req,res)=>{
-  try{
-    const deviceKey=String(req.header("x-device-key")||req.body?.deviceKey||"").trim();
-    if(!deviceKey) return res.status(401).json({error:"Missing device key"});
-    const {data:device}=await supabase.from("devices").select("id").eq("device_key",deviceKey).eq("is_active",true).maybeSingle();
-    if(!device) return res.status(403).json({error:"Unknown device"});
-    const {data:order,error}=await supabase.from("orders").update({status:"accepted",updated_at:new Date().toISOString()}).eq("id",req.params.id).eq("status","new").select("id,status,updated_at").maybeSingle();
-    if(error) throw error;
-    if(!order) return res.status(409).json({error:"Order is no longer new"});
-    res.json({ok:true,order});
-  } catch(error){ console.error("POST /api/orders/:id/accept:",error); res.status(500).json({error:"Failed to accept order"}); }
-});
-
-app.use((_req, res) => { res.status(404).json({ error: "Not found" }); });
-app.listen(port, "0.0.0.0", () => { console.log(`Prilavok backend listening on port ${port}`); });
+app.listen(port, () => console.log(`Prilavok backend listening on ${port}`));

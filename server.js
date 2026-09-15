@@ -3,6 +3,7 @@ import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 import { createPhoneVerificationService } from "./phone-verification.js";
+import { createCheckoutService } from "./checkout-service.js";
 
 import "./public/order-validation.js";
 const { validate: validateOrderContact, normalizePhone } = globalThis.OrderValidation;
@@ -24,8 +25,32 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 const phoneVerification = createPhoneVerificationService(supabase, normalizePhone);
+const checkout = createCheckoutService({ supabase, normalizePhone, validateOrderContact, phoneVerification, deliveryFee });
 
 app.get("/health", (_req, res) => res.json({ ok: true, service: "prilavok-backend" }));
+
+app.post("/api/checkout", async (req, res) => {
+  try {
+    const returnBaseUrl = `${req.protocol}://${req.get("host")}`;
+    const result = await checkout.create(req.body, returnBaseUrl);
+    if (result.error) return res.status(result.status || 400).json({ error: result.error });
+    return res.status(201).json(result);
+  } catch (error) {
+    console.error("POST /api/checkout:", error);
+    return res.status(500).json({ error: "Не удалось начать оформление заказа" });
+  }
+});
+
+app.get("/api/checkout/:token", async (req, res) => {
+  try {
+    const session = await checkout.get(String(req.params.token || ""));
+    if (!session) return res.status(404).json({ error: "Оформление не найдено" });
+    return res.json({ status: session.status, expiresAt: session.expires_at, trackingToken: session.tracking_token || null, orderId: session.order_id || null });
+  } catch (error) {
+    console.error("GET /api/checkout/:token:", error);
+    return res.status(500).json({ error: "Не удалось проверить оформление" });
+  }
+});
 
 app.post("/api/phone-verification", async (req, res) => {
   try {
@@ -57,7 +82,12 @@ app.post("/api/phone-verification/:token/confirm", async (req, res) => {
     const telegramUserId = req.body?.telegramUserId;
     const result = await phoneVerification.confirm(req.params.token, phone, telegramUserId);
     if (!result.ok) return res.status(409).json(result);
-    return res.json(result);
+
+    const finalized = await checkout.finalizeByVerificationToken(req.params.token);
+    if (finalized && !finalized.ok) {
+      return res.status(409).json({ ok: false, error: "Не удалось завершить оформление заказа", reason: finalized.reason });
+    }
+    return res.json({ ...result, orderCreated: Boolean(finalized?.ok), trackingToken: finalized?.trackingToken || null });
   } catch (error) {
     console.error("POST /api/phone-verification/:token/confirm:", error);
     return res.status(500).json({ ok: false, error: "Не удалось подтвердить номер" });

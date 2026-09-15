@@ -198,6 +198,40 @@ app.get("/api/orders/:token", async (req, res) => {
   catch (error) { console.error("GET /api/orders/:token:", error); res.status(500).json({ error: "Не удалось загрузить заказ" }); }
 });
 
+app.post("/api/orders/:id/accept", async (req, res) => {
+  try {
+    const deviceKey = String(req.header("x-device-key") || req.body?.deviceKey || "").trim();
+    const id = String(req.params.id || "").trim();
+    if (!deviceKey) return res.status(401).json({ error: "Missing device key" });
+    if (!id) return res.status(400).json({ error: "Invalid order id" });
+
+    const { data: device, error: deviceError } = await supabase.from("devices").select("id").eq("device_key", deviceKey).eq("is_active", true).maybeSingle();
+    if (deviceError) throw deviceError;
+    if (!device) return res.status(401).json({ error: "Invalid device key" });
+
+    const { data: existing, error: existingError } = await supabase.from("orders").select("id,status,updated_at").eq("id", id).maybeSingle();
+    if (existingError) throw existingError;
+    if (!existing) return res.status(404).json({ error: "Заказ не найден" });
+
+    if (existing.status === "accepted") return res.json({ ok: true, order: existing, alreadyAccepted: true });
+    if (existing.status !== "new") return res.status(409).json({ error: "Заказ уже изменил статус", order: existing });
+
+    const { data: order, error } = await supabase.from("orders").update({ status: "accepted", updated_at: new Date().toISOString() }).eq("id", id).eq("status", "new").select("id,status,updated_at").maybeSingle();
+    if (error) throw error;
+    if (!order) {
+      const { data: current, error: currentError } = await supabase.from("orders").select("id,status,updated_at").eq("id", id).maybeSingle();
+      if (currentError) throw currentError;
+      if (current?.status === "accepted") return res.json({ ok: true, order: current, alreadyAccepted: true });
+      return res.status(409).json({ error: "Заказ уже изменил статус", order: current || null });
+    }
+
+    return res.json({ ok: true, order });
+  } catch (error) {
+    console.error("POST /api/orders/:id/accept:", error);
+    return res.status(500).json({ error: "Не удалось принять заказ" });
+  }
+});
+
 app.patch("/api/orders/:id/status", async (req, res) => {
   try { const deviceKey = String(req.header("x-device-key") || "").trim(); const id = String(req.params.id || "").trim(); const status = String(req.body?.status || "").trim(); const allowed = new Set(["new", "accepted", "preparing", "ready", "cancelled"]); if (!deviceKey) return res.status(401).json({ error: "Missing device key" }); if (!id || !allowed.has(status)) return res.status(400).json({ error: "Invalid status" }); const { data: device, error: deviceError } = await supabase.from("devices").select("id").eq("device_key", deviceKey).eq("is_active", true).maybeSingle(); if (deviceError) throw deviceError; if (!device) return res.status(401).json({ error: "Invalid device key" }); const { data: order, error } = await supabase.from("orders").update({ status, updated_at: new Date().toISOString() }).eq("id", id).select("id,status,updated_at").single(); if (error) throw error; res.json({ ok: true, order }); }
   catch (error) { console.error("PATCH /api/orders/:id/status:", error); res.status(500).json({ error: "Не удалось обновить статус заказа" }); }

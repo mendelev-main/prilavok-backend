@@ -50,22 +50,44 @@
     try{const r=await fetch(API+'/api/checkout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const j=await r.json();if(!r.ok)throw new Error(j.error||'Не удалось начать оформление');saveSession({token:j.checkoutToken,expiresAt:j.expiresAt});location.href=j.telegramUrl}
     catch(e){toast(e.message||'Не удалось открыть подтверждение');btn.disabled=false;btn.textContent='Оформить заказ'}
   }
+  async function loadOrderByTrackingToken(token,scroll){
+    if(!token)return null;
+    const r=await fetch(API+'/api/orders/'+encodeURIComponent(token),{cache:'no-store'});
+    if(r.status===404)return null;
+    const j=await r.json();if(!r.ok)throw new Error(j.error||'Ошибка');
+    trackingOrder=j.order;renderTracking(j.order);
+    if(scroll)document.getElementById('trackingCard')?.scrollIntoView({behavior:'smooth',block:'start'});
+    return j.order;
+  }
+  async function correctedLoadTracking(scroll){
+    if(!trackingToken)return;
+    try{
+      const order=await loadOrderByTrackingToken(trackingToken,scroll);
+      if(!order){
+        trackingOrder=null;
+        const card=document.getElementById('trackingCard');if(card)card.innerHTML='<div class="muted">Заказ не найден.</div>';
+        return;
+      }
+    }catch(_){
+      if(scroll){if(!trackingOrder){const card=document.getElementById('trackingCard');if(card)card.innerHTML='<div class="muted">Не удалось загрузить заказ. Закройте и откройте блок, чтобы повторить.</div>'}toast('Не удалось загрузить статус заказа')}
+    }
+  }
   async function loadReturnedOrder(token){
     if(!token)return false;
     try{
-      const r=await fetch(API+'/api/orders/'+encodeURIComponent(token),{cache:'no-store'});const j=await r.json();
-      if(!r.ok||!j.order)return false;
-      saveTrackingToken(token);
-      trackingOrder=j.order;
+      const order=await loadOrderByTrackingToken(token,false);if(!order)return false;
+      trackingToken=String(token).trim();
+      try{localStorage.setItem('prilavok_tracking_token',trackingToken)}catch(_){}
       const card=document.getElementById('trackingCard');if(card){card.hidden=false;card.style.display='block'}
       document.getElementById('trackingLink')?.setAttribute('aria-expanded','true');
-      renderTracking(j.order);
+      clearInterval(trackingTimer);trackingTimer=setInterval(()=>correctedLoadTracking(false),2500);
       return true;
     }catch(_){return false}
   }
 
   window.addEventListener('load',async()=>{
     window.submitOrder=verifiedSubmitOrder;
+    window.loadTracking=correctedLoadTracking;
     const url=new URL(location.href);const returnedOrder=url.searchParams.get('order');
     if(returnedOrder){
       const ok=await loadReturnedOrder(returnedOrder);

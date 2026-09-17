@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node ready-server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.0",

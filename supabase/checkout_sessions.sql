@@ -10,17 +10,24 @@ create table if not exists public.checkout_sessions (
   verification_token_hash text,
   order_id uuid references public.orders(id) on delete set null,
   tracking_token text,
+  telegram_user_id text,
   expires_at timestamptz not null,
   verified_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
+alter table public.checkout_sessions
+  add column if not exists telegram_user_id text;
+
 create index if not exists checkout_sessions_expires_at_idx
   on public.checkout_sessions (expires_at);
 
 create index if not exists checkout_sessions_phone_idx
   on public.checkout_sessions (phone);
+
+create index if not exists checkout_sessions_telegram_user_id_idx
+  on public.checkout_sessions (telegram_user_id);
 
 alter table public.checkout_sessions enable row level security;
 

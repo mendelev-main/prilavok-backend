@@ -19,10 +19,14 @@ const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
 if (!supabaseUrl || !supabaseKey) throw new Error("Missing Supabase configuration");
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+function shortOrderNumber(orderId) {
+  return String(orderId || "").replace(/-/g, "").slice(0, 8).toUpperCase();
+}
+
 const orderStatusMessages = {
-  new: externalId => `🧾 <b>Заказ ${externalId || ''} создан</b>\n\nОтправили ваш заказ в заведение. Сообщим, когда его статус изменится.`,
-  accepted: externalId => `✓ <b>Заказ ${externalId || ''} подтвержден</b>\n\nМы подтвердили получение вашего заказа. Когда заказ будет готов, вам придёт уведомление.`,
-  ready: externalId => `🔔 <b>Заказ ${externalId || ''} готов</b>\n\nВаш заказ готов. Спасибо, что выбираете нас ❤️`,
+  new: orderId => `<b>Заказ №${shortOrderNumber(orderId)}</b>\n⚪️ Статус: <b>Создан</b>\n\nОтправили ваш заказ в заведение. Сообщим, когда его статус изменится.`,
+  accepted: orderId => `<b>Заказ №${shortOrderNumber(orderId)}</b>\n🟡 Статус: <b>Подтвержден</b>\n\nМы подтвердили получение вашего заказа. Когда заказ будет готов, вам придёт уведомление.`,
+  ready: orderId => `<b>Заказ №${shortOrderNumber(orderId)}</b>\n🟢 Статус: <b>Готов</b>\n\nВаш заказ готов. Спасибо, что выбираете нас ❤️`,
 };
 
 async function telegramRecipientForOrder(orderId) {
@@ -37,7 +41,7 @@ async function telegramRecipientForOrder(orderId) {
   return data?.telegram_user_id ? String(data.telegram_user_id) : null;
 }
 
-async function sendOrderTelegramStatus(orderId, status, externalId) {
+async function sendOrderTelegramStatus(orderId, status) {
   if (!telegramBotToken || !orderStatusMessages[status]) return false;
   try {
     const chatId = await telegramRecipientForOrder(orderId);
@@ -47,7 +51,7 @@ async function sendOrderTelegramStatus(orderId, status, externalId) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: orderStatusMessages[status](externalId),
+        text: orderStatusMessages[status](orderId),
         parse_mode: "HTML",
         disable_web_page_preview: true,
       }),
@@ -107,7 +111,7 @@ runningApp.post("/api/orders/:id/ready", async (req, res) => {
     const { data: order, error } = await supabase.from("orders").update({ status: "ready", updated_at: new Date().toISOString() }).eq("id", id).eq("status", "accepted").select("id,status,updated_at,external_id").maybeSingle();
     if (error) throw error;
     if (!order) return res.status(409).json({ error: "Статус заказа уже изменился" });
-    await sendOrderTelegramStatus(order.id, "ready", order.external_id);
+    await sendOrderTelegramStatus(order.id, "ready");
     return res.json({ ok: true, order });
   } catch (error) {
     console.error("POST /api/orders/:id/ready:", error);
@@ -134,7 +138,7 @@ async function notifyNewAndAcceptedOrders() {
       if (!status) continue;
       const marker = `${status}:${order.id}:${order.updated_at || order.created_at || ''}`;
       if (notifyNewAndAcceptedOrders.sent.has(marker)) continue;
-      const sent = await sendOrderTelegramStatus(order.id, status, order.external_id);
+      const sent = await sendOrderTelegramStatus(order.id, status);
       if (sent) notifyNewAndAcceptedOrders.sent.add(marker);
     }
   } catch (error) {

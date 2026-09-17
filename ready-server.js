@@ -15,8 +15,50 @@ if (!runningApp) throw new Error("Prilavok backend app was not initialized");
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
 if (!supabaseUrl || !supabaseKey) throw new Error("Missing Supabase configuration");
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+const orderStatusMessages = {
+  new: externalId => `🧾 <b>Заказ ${externalId || ''} создан</b>\n\nОтправили ваш заказ в заведение. Сообщим, когда его статус изменится.`,
+  accepted: externalId => `✓ <b>Заказ ${externalId || ''} подтвержден</b>\n\nМы подтвердили получение вашего заказа. Когда заказ будет готов, вам придёт уведомление.`,
+  ready: externalId => `🔔 <b>Заказ ${externalId || ''} готов</b>\n\nВаш заказ готов. Спасибо, что выбираете нас ❤️`,
+};
+
+async function telegramRecipientForOrder(orderId) {
+  const { data, error } = await supabase.from("checkout_sessions")
+    .select("telegram_user_id")
+    .eq("order_id", orderId)
+    .not("telegram_user_id", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.telegram_user_id ? String(data.telegram_user_id) : null;
+}
+
+async function sendOrderTelegramStatus(orderId, status, externalId) {
+  if (!telegramBotToken || !orderStatusMessages[status]) return false;
+  try {
+    const chatId = await telegramRecipientForOrder(orderId);
+    if (!chatId) return false;
+    const response = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: orderStatusMessages[status](externalId),
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    });
+    if (!response.ok) throw new Error(`Telegram ${response.status}: ${await response.text()}`);
+    return true;
+  } catch (error) {
+    console.error(`Telegram order status ${status}:`, error);
+    return false;
+  }
+}
 
 // Customer tracking has exactly three public stages:
 // new -> Заказ создан, accepted -> Заказ подтвержден, ready -> Заказ готов.
@@ -57,20 +99,51 @@ runningApp.post("/api/orders/:id/ready", async (req, res) => {
     const { data: device, error: deviceError } = await supabase.from("devices").select("id").eq("device_key", deviceKey).eq("is_active", true).maybeSingle();
     if (deviceError) throw deviceError;
     if (!device) return res.status(401).json({ error: "Invalid device key" });
-    const { data: existing, error: existingError } = await supabase.from("orders").select("id,status,updated_at").eq("id", id).maybeSingle();
+    const { data: existing, error: existingError } = await supabase.from("orders").select("id,status,updated_at,external_id").eq("id", id).maybeSingle();
     if (existingError) throw existingError;
     if (!existing) return res.status(404).json({ error: "Заказ не найден" });
     if (existing.status === "ready") return res.json({ ok: true, order: existing, alreadyReady: true });
     if (existing.status !== "accepted") return res.status(409).json({ error: "Сначала заказ должен быть взят в работу", order: existing });
-    const { data: order, error } = await supabase.from("orders").update({ status: "ready", updated_at: new Date().toISOString() }).eq("id", id).eq("status", "accepted").select("id,status,updated_at").maybeSingle();
+    const { data: order, error } = await supabase.from("orders").update({ status: "ready", updated_at: new Date().toISOString() }).eq("id", id).eq("status", "accepted").select("id,status,updated_at,external_id").maybeSingle();
     if (error) throw error;
     if (!order) return res.status(409).json({ error: "Статус заказа уже изменился" });
+    await sendOrderTelegramStatus(order.id, "ready", order.external_id);
     return res.json({ ok: true, order });
   } catch (error) {
     console.error("POST /api/orders/:id/ready:", error);
     return res.status(500).json({ error: "Не удалось отметить заказ готовым" });
   }
 });
+
+async function notifyNewAndAcceptedOrders() {
+  try {
+    if (!telegramBotToken) return;
+    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const { data: sessions, error } = await supabase.from("checkout_sessions")
+      .select("id,order_id,telegram_user_id,created_at,updated_at,orders(id,status,external_id,created_at,updated_at)")
+      .not("order_id", "is", null)
+      .not("telegram_user_id", "is", null)
+      .gte("updated_at", cutoff)
+      .limit(100);
+    if (error) throw error;
+
+    for (const session of sessions || []) {
+      const order = session.orders;
+      if (!order?.id) continue;
+      const status = order.status === "new" ? "new" : order.status === "accepted" ? "accepted" : null;
+      if (!status) continue;
+      const marker = `${status}:${order.id}:${order.updated_at || order.created_at || ''}`;
+      if (notifyNewAndAcceptedOrders.sent.has(marker)) continue;
+      const sent = await sendOrderTelegramStatus(order.id, status, order.external_id);
+      if (sent) notifyNewAndAcceptedOrders.sent.add(marker);
+    }
+  } catch (error) {
+    console.error("Telegram order status poll:", error);
+  }
+}
+notifyNewAndAcceptedOrders.sent = new Set();
+setTimeout(notifyNewAndAcceptedOrders, 3000);
+setInterval(notifyNewAndAcceptedOrders, 3000);
 
 // Once a day remove ready orders that have already been kept for 24 hours.
 // Delete child rows explicitly so cleanup works regardless of FK cascade setup.

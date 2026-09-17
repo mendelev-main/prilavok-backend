@@ -35,7 +35,7 @@ export function createPhoneVerificationService(supabase, normalizePhone) {
   async function get(token) {
     const tokenHash = hashToken(token);
     const { data, error } = await supabase.from("phone_verifications")
-      .select("id,phone,status,expires_at,verified_at,return_url")
+      .select("id,phone,status,expires_at,verified_at,return_url,telegram_user_id")
       .eq("token_hash", tokenHash).maybeSingle();
     if (error) throw error;
     if (!data) return null;
@@ -59,11 +59,11 @@ export function createPhoneVerificationService(supabase, normalizePhone) {
     const { data, error } = await supabase.from("phone_verifications")
       .update({ status: "VERIFIED", verified_at: verifiedAt, telegram_user_id: String(telegramUserId) })
       .eq("id", verification.id).eq("status", "PENDING")
-      .select("id,status,verified_at,return_url").maybeSingle();
+      .select("id,status,verified_at,return_url,telegram_user_id").maybeSingle();
     if (error) throw error;
     if (!data) return { ok: false, reason: "ALREADY_USED" };
 
-    return { ok: true, status: "VERIFIED", verifiedAt: data.verified_at, returnUrl: data.return_url || null };
+    return { ok: true, status: "VERIFIED", verifiedAt: data.verified_at, returnUrl: data.return_url || null, telegramUserId: data.telegram_user_id || null };
   }
 
   async function consume(token, phone) {

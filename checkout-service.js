@@ -136,6 +136,7 @@ export function createCheckoutService({ supabase, normalizePhone, validateOrderC
       verified_at: verification.verified_at || now,
       order_id: created.id,
       tracking_token: trackingToken,
+      telegram_user_id: verification.telegram_user_id || null,
       updated_at: now,
     }).eq("id", session.id);
     if (updateError) throw updateError;

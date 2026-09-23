@@ -1,4 +1,5 @@
 import express from "express";
+import { mountOwnerRoutes, ownerBotAuthorized } from "./owner-auth.js";
 import cors from "cors";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
@@ -10,6 +11,7 @@ const { validate: validateOrderContact, normalizePhone } = globalThis.OrderValid
 
 const app = express();
 app.use(cors());
+app.use("/api/owner/report", express.json({ limit: "14mb" }));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
@@ -24,6 +26,7 @@ if (!supabaseUrl || !supabaseKey) {
 }
 
 const supabase = createClient(supabaseUrl, supabaseKey);
+mountOwnerRoutes(app,{db:supabase});
 const phoneVerification = createPhoneVerificationService(supabase, normalizePhone);
 const checkout = createCheckoutService({ supabase, normalizePhone, validateOrderContact, phoneVerification, deliveryFee });
 
@@ -77,6 +80,9 @@ app.get("/api/phone-verification/:token", async (req, res) => {
 });
 
 app.post("/api/phone-verification/:token/confirm", async (req, res) => {
+  if (process.env.OWNER_AUTH_ENABLED === "true" && !ownerBotAuthorized(req.header("x-owner-bot-secret"), process.env.OWNER_BOT_SHARED_SECRET)) {
+    return res.status(403).json({ ok: false, error: "Подтверждение доступно только через бота" });
+  }
   try {
     const phone = String(req.body?.phone || "").trim();
     const telegramUserId = req.body?.telegramUserId;

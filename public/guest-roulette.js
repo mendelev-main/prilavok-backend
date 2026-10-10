@@ -6,7 +6,8 @@
   const positiveAngle=angle=>((angle%360)+360)%360;
   const angleIndex=(angle,count)=>count>0?Math.floor(positiveAngle(-angle+180/count)/(360/count))%count:0;
   const targetAngle=(start,index,count)=>start+5*360+positiveAngle(-index*360/count-start);
-  const spinFrame=(start,end,elapsed,duration=3200)=>{const t=Math.max(0,Math.min(1,elapsed/duration));return {angle:start+(end-start)*(1-Math.pow(1-t,4)),done:t===1};};
+  const spinFrame=(start,end,elapsed,duration=6000)=>{const t=Math.max(0,Math.min(1,elapsed/duration));return {angle:start+(end-start)*(1-Math.pow(1-t,4)),done:t===1};};
+  const randomDuration=()=>{const values=new Uint32Array(1);if(globalThis.crypto?.getRandomValues)globalThis.crypto.getRandomValues(values);else values[0]=Math.floor(Math.random()*0xffffffff);return 4000+values[0]%4001;};
   const randomItem=(items,lastId)=>{
     const candidates=items.length>1?items.filter(item=>String(item.id)!==String(lastId)):items;
     const values=new Uint32Array(1);
@@ -26,7 +27,7 @@
       const step=360/Math.max(1,items.length),colors=['#ef765e','#343943','#d95643','#272b32'];
       wheel.style.background=items.length?'conic-gradient(from '+(-step/2)+'deg,'+items.map((_,i)=>colors[i%colors.length]+' '+(i*step)+'deg '+((i+1)*step)+'deg').join(',')+')':'';
       const labelStep=Math.ceil(items.length/12)||1;
-      wheel.innerHTML=items.map((_,i)=>i%labelStep?'':'<span class="roulette-sector" style="--sector-angle:'+(i*step)+'deg">'+(i+1)+'</span>').join('');
+      wheel.innerHTML=items.map((_,i)=>i%labelStep?'':'<span class="roulette-sector" data-sector="'+i+'" style="--sector-angle:'+(i*step)+'deg">'+(i+1)+'</span>').join('');
       wheel.style.transform='rotate('+angle+'deg)';
     };
     const resetResult=()=>{cancelSpin();result=null;angle=0;viewButton.hidden=true;actions.classList.remove('has-result');spinButton.textContent='Крутить';spinButton.disabled=false;categorySelect.disabled=false;readout.innerHTML='<span class="roulette-readout-label">Ваш выбор</span><strong>Готовы?</strong><small>Нажмите «Крутить»</small>';buildWheel(productsFor(categorySelect.value));};
@@ -39,7 +40,7 @@
     };
     const open=()=>{resetResult();populateCategories();previousOverflow=document.body.style.overflow;overlay.classList.add('is-open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';closeButton.focus();};
     const close=()=>{cancelSpin();overlay.classList.remove('is-open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow=previousOverflow;launch.focus();};
-    const showItem=(item,index,finished=false)=>{readout.innerHTML='<span class="roulette-readout-label">'+(finished?'Попробуйте':'Под указателем')+' · '+(index+1)+'</span><strong>'+escapeHtml(item.name)+'</strong><small>'+escapeHtml(productPrice(item.price))+'</small>';};
+    const showItem=(item,index,finished=false)=>{wheel.querySelectorAll('[data-sector]').forEach(label=>label.classList.toggle('is-active',Number(label.dataset.sector)===index));readout.dataset.sector=String(index);readout.innerHTML='<span class="roulette-readout-label">'+(finished?'Попробуйте':'Под указателем')+' · '+(index+1)+'</span><strong>'+escapeHtml(item.name)+'</strong><small>'+escapeHtml(productPrice(item.price))+'</small>';};
     const finish=(selected,index)=>{
       frameId=null;readout.setAttribute('aria-live','polite');categorySelect.disabled=false;spinButton.disabled=false;spinButton.textContent='Крутить ещё';
       result=productsFor(categorySelect.value).find(item=>String(item.id)===String(selected.id));
@@ -48,16 +49,16 @@
     };
     const spin=()=>{
       if(spinButton.disabled)return;const items=productsFor(categorySelect.value);if(!items.length){populateCategories();return;}
-      cancelSpin();const selected=randomItem(items,lastProductId),index=items.indexOf(selected),start=angle,end=targetAngle(start,index,items.length),run=generation;
+      cancelSpin();const selected=randomItem(items,lastProductId),index=items.indexOf(selected),start=angle,end=targetAngle(start,index,items.length),duration=randomDuration(),run=generation;
       result=null;viewButton.hidden=true;actions.classList.remove('has-result');spinButton.disabled=true;categorySelect.disabled=true;spinButton.textContent='Выбираем…';buildWheel(items);readout.setAttribute('aria-live','off');
       if(reduceMotion()){angle=end;wheel.style.transform='rotate('+angle+'deg)';finish(selected,index);return;}
       let started=null,visibleIndex=-1;
-      const tick=now=>{if(run!==generation)return;if(started===null)started=now;const frame=spinFrame(start,end,now-started);angle=frame.angle;wheel.style.transform='rotate('+angle+'deg)';const current=angleIndex(angle,items.length);if(current!==visibleIndex){visibleIndex=current;showItem(items[current],current);}if(frame.done){finish(selected,index)}else frameId=requestAnimationFrame(tick);};
+      const tick=now=>{if(run!==generation)return;if(started===null)started=now;const frame=spinFrame(start,end,now-started,duration);angle=frame.angle;wheel.style.transform='rotate('+angle+'deg)';const current=angleIndex(angle,items.length);if(current!==visibleIndex){visibleIndex=current;showItem(items[current],current);}if(frame.done){finish(selected,index)}else frameId=requestAnimationFrame(tick);};
       frameId=requestAnimationFrame(tick);
     };
     launch.addEventListener('click',open);closeButton.addEventListener('click',close);overlay.addEventListener('click',event=>{if(event.target===overlay)close()});categorySelect.addEventListener('change',resetResult);spinButton.addEventListener('click',spin);
     viewButton.addEventListener('click',()=>{if(!result)return;const selected=productsFor(categorySelect.value).find(item=>String(item.id)===String(result.id));if(!selected){resetResult();populateCategories();return;}close();options.onSelect?.(selected);});
     document.addEventListener('keydown',event=>{if(!overlay.classList.contains('is-open'))return;if(event.key==='Escape')close();if(event.key==='Tab'){const controls=[...dialog.querySelectorAll('button:not([disabled]),select:not([disabled])')].filter(node=>!node.hidden),first=controls[0],last=controls.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus()}}});
   }
-  window.GuestRoulette={mount,motion:{angleIndex,targetAngle,spinFrame}};
+  window.GuestRoulette={mount,motion:{angleIndex,targetAngle,spinFrame,randomDuration}};
 })();

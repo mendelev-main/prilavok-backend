@@ -19,7 +19,7 @@
   function mount(options){
     const launch=document.getElementById('rouletteLaunch');if(!launch||!options)return;
     const overlay=document.createElement('div');overlay.className='roulette-overlay';overlay.setAttribute('aria-hidden','true');
-    overlay.innerHTML='<div class="roulette-dialog" role="dialog" aria-modal="true" aria-labelledby="rouletteTitle" aria-describedby="rouletteDescription"><button class="roulette-close" type="button" aria-label="Закрыть">×</button><div class="roulette-heading"><h2 id="rouletteTitle">Барабан товаров</h2><p id="rouletteDescription">Выберите категорию — мы предложим случайный доступный товар.</p></div><label class="roulette-label" for="rouletteCategory">Категория</label><div class="roulette-select-wrap"><select id="rouletteCategory" class="roulette-select"></select></div><div class="roulette-stage"><div class="roulette-wheel" aria-hidden="true"></div><div class="roulette-selection" aria-hidden="true"></div></div><div class="roulette-readout" aria-live="polite"><span class="roulette-readout-label">Ваш выбор</span><strong>Готовы?</strong><small>Нажмите «Крутить»</small></div><div class="roulette-actions"><button class="roulette-spin" type="button">Крутить</button><button class="roulette-view" type="button" hidden>Открыть товар</button></div></div>';
+    overlay.innerHTML='<div class="roulette-dialog" role="dialog" aria-modal="true" aria-labelledby="rouletteTitle"><button class="roulette-close" type="button" aria-label="Закрыть">×</button><div class="roulette-heading"><h2 id="rouletteTitle">Барабан товаров</h2></div><label class="roulette-label" for="rouletteCategory">Категория</label><div class="roulette-select-wrap"><select id="rouletteCategory" class="roulette-select"></select></div><div class="roulette-stage"><div class="roulette-wheel" aria-hidden="true"></div><div class="roulette-selection" aria-hidden="true"></div></div><div class="roulette-readout" aria-live="polite"></div><div class="roulette-actions"><button class="roulette-spin" type="button">Крутить</button><button class="roulette-view" type="button" hidden>Открыть товар</button></div></div>';
     document.body.appendChild(overlay);
     const dialog=overlay.querySelector('.roulette-dialog'),closeButton=overlay.querySelector('.roulette-close'),categorySelect=overlay.querySelector('.roulette-select'),wheel=overlay.querySelector('.roulette-wheel'),readout=overlay.querySelector('.roulette-readout'),spinButton=overlay.querySelector('.roulette-spin'),viewButton=overlay.querySelector('.roulette-view'),actions=overlay.querySelector('.roulette-actions');
     let result=null,lastProductId=null,frameId=null,generation=0,angle=0,previousOverflow='',drumRows=[],drumItems=[];
@@ -44,13 +44,13 @@
       drumItems=items;wheel.innerHTML=Array.from({length:5},()=>'<div class="roulette-drum-row"></div>').join('');
       drumRows=[...wheel.children];renderDrum(angle);
     };
-    const resetResult=()=>{cancelSpin();result=null;angle=0;viewButton.hidden=true;actions.classList.remove('has-result');spinButton.textContent='Крутить';spinButton.disabled=false;categorySelect.disabled=false;readout.innerHTML='<span class="roulette-readout-label">Ваш выбор</span><strong>Готовы?</strong><small>Нажмите «Крутить»</small>';buildWheel(productsFor(categorySelect.value));};
+    const resetResult=()=>{cancelSpin();result=null;angle=0;viewButton.hidden=true;actions.classList.remove('has-result');spinButton.textContent='Крутить';spinButton.disabled=false;categorySelect.disabled=false;readout.classList.remove('is-error');readout.innerHTML='';buildWheel(productsFor(categorySelect.value));};
     const populateCategories=()=>{
       const categories=(options.getCategories?.()||[]).filter(category=>productsFor(category.id).length>0);
       categorySelect.innerHTML=categories.map(category=>'<option value="'+escapeHtml(category.id)+'">'+escapeHtml(category.name)+'</option>').join('');
       const preferred=String(options.getActiveCategoryId?.()??'');if(categories.some(category=>String(category.id)===preferred))categorySelect.value=preferred;
       const hasCategories=categories.length>0;categorySelect.disabled=!hasCategories;spinButton.disabled=!hasCategories;buildWheel(productsFor(categorySelect.value));
-      if(!hasCategories){readout.innerHTML='<strong>Нет доступных товаров</strong><small>Попробуйте позже</small>';}return hasCategories;
+      if(!hasCategories){readout.classList.add('is-error');readout.innerHTML='<strong>Нет доступных товаров</strong><small>Попробуйте позже</small>';}return hasCategories;
     };
     const open=()=>{resetResult();populateCategories();previousOverflow=document.body.style.overflow;overlay.classList.add('is-open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';closeButton.focus();};
     const close=()=>{cancelSpin();overlay.classList.remove('is-open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow=previousOverflow;launch.focus();};
@@ -58,7 +58,7 @@
     const finish=(selected,index)=>{
       frameId=null;readout.setAttribute('aria-live','polite');categorySelect.disabled=false;spinButton.disabled=false;spinButton.textContent='Крутить ещё';
       result=productsFor(categorySelect.value).find(item=>String(item.id)===String(selected.id));
-      if(!result){viewButton.hidden=true;readout.innerHTML='<strong>Товар закончился</strong><small>Крутите ещё, чтобы выбрать другой</small>';return;}
+      if(!result){viewButton.hidden=true;readout.classList.add('is-error');readout.innerHTML='<strong>Товар закончился</strong><small>Крутите ещё, чтобы выбрать другой</small>';return;}
       lastProductId=result.id;showItem(result,index,true);viewButton.hidden=false;actions.classList.add('has-result');
     };
     const spin=()=>{

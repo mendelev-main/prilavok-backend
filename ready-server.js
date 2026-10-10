@@ -1,4 +1,5 @@
 import express from "express";
+import { createCustomerOrderNotificationWorker } from "./customer-order-notifications.js";
 import { sendLoyaltyTelegram } from "./loyalty-telegram.js";
 import { createClient } from "@supabase/supabase-js";
 import { readFile } from "node:fs/promises";
@@ -57,11 +58,12 @@ async function sendOrderTelegramStatus(orderId, status, externalId, estimateLabe
         parse_mode: "HTML",
         disable_web_page_preview: true,
       }),
+      signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) throw new Error(`Telegram ${response.status}: ${await response.text()}`);
+    if (!response.ok) throw new Error("Telegram order status rejected");
     return true;
   } catch (error) {
-    console.error(`Telegram order status ${status}:`, error);
+    console.error("Telegram order status failed", {status});
     return false;
   }
 }
@@ -168,35 +170,9 @@ runningApp.post("/api/orders/:id/ready", async (req, res) => {
   }
 });
 
-async function notifyNewAndAcceptedOrders() {
-  try {
-    if (!telegramBotToken || isSiteSleepWindow()) return;
-    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const { data: sessions, error } = await supabase.from("checkout_sessions")
-      .select("id,order_id,telegram_user_id,created_at,updated_at,orders(id,status,external_id,created_at,updated_at)")
-      .not("order_id", "is", null)
-      .not("telegram_user_id", "is", null)
-      .gte("updated_at", cutoff)
-      .limit(100);
-    if (error) throw error;
-
-    for (const session of sessions || []) {
-      const order = session.orders;
-      if (!order?.id) continue;
-      const status = order.status === "new" ? "new" : null;
-      if (!status) continue;
-      const marker = `${status}:${order.id}:${order.updated_at || order.created_at || ''}`;
-      if (notifyNewAndAcceptedOrders.sent.has(marker)) continue;
-      const sent = await sendOrderTelegramStatus(order.id, status, order.external_id);
-      if (sent) notifyNewAndAcceptedOrders.sent.add(marker);
-    }
-  } catch (error) {
-    console.error("Telegram order status poll:", error);
-  }
-}
-notifyNewAndAcceptedOrders.sent = new Set();
-setTimeout(notifyNewAndAcceptedOrders, 3000);
-setInterval(notifyNewAndAcceptedOrders, 3000);
+const notifyCreatedOrders=createCustomerOrderNotificationWorker({supabase,botToken:telegramBotToken,isSleeping:isSiteSleepWindow});
+setTimeout(notifyCreatedOrders,3000);
+setInterval(notifyCreatedOrders,3000);
 
 // Once a day remove ready orders that have already been kept for 24 hours.
 // Delete child rows explicitly so cleanup works regardless of FK cascade setup.

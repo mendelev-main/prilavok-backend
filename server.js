@@ -130,7 +130,7 @@ app.get("/api/phone-verification/:token", async (req, res) => {
 });
 
 app.post("/api/phone-verification/:token/confirm", async (req, res) => {
-  if (process.env.OWNER_AUTH_ENABLED === "true" && !ownerBotAuthorized(req.header("x-owner-bot-secret"), process.env.OWNER_BOT_SHARED_SECRET)) {
+  if (!ownerBotAuthorized(req.header("x-owner-bot-secret"), process.env.OWNER_BOT_SHARED_SECRET)) {
     return res.status(403).json({ ok: false, error: "Подтверждение доступно только через бота" });
   }
   try {
